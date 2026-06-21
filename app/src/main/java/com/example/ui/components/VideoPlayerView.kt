@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -57,6 +58,7 @@ fun VideoPlayerView(
     var isPlayingState by remember { mutableStateOf(false) }
     var isLoadingState by remember { mutableStateOf(true) }
     var isPlayerError by remember { mutableStateOf(false) }
+    var playerErrorMessage by remember { mutableStateOf<String?>(null) }
 
     // Controls Visibility state
     var showControls by remember { mutableStateOf(true) }
@@ -95,6 +97,14 @@ fun VideoPlayerView(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isLoadingState = playbackState == Player.STATE_BUFFERING
                 isPlayerError = playbackState == Player.STATE_IDLE && player.playerError != null
+                if (player.playerError != null) {
+                    playerErrorMessage = player.playerError?.message
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                isPlayerError = true
+                playerErrorMessage = (error.message ?: "Playback error").plus(" | ").plus(error.errorCode)
             }
         }
         player.addListener(listener)
@@ -250,16 +260,15 @@ fun VideoPlayerView(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Unable to load stream URL.",
+                        text = (playerErrorMessage ?: "Unable to load stream URL."),
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = selectedChannel?.streamUrl ?: "",
+                        text = (selectedChannel?.streamUrl ?: "") + (playerErrorMessage?.let { "\nDetails: $it" } ?: ""),
                         color = Color.Gray,
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 4.dp),
-                        maxLines = 1
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
@@ -290,7 +299,7 @@ fun VideoPlayerView(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     LinearProgressIndicator(
-                        progress = { gestureProgress },
+                        progress = gestureProgress,
                         color = MaterialTheme.colorScheme.primary,
                         trackColor = Color.White.copy(alpha = 0.2f),
                         modifier = Modifier

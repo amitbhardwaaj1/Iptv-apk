@@ -3,8 +3,15 @@ package com.example.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
+import android.util.Base64
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.RequestMetadata
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.example.data.Channel
 import com.example.data.IPTVDatabase
 import com.example.data.IPTVRepository
@@ -45,7 +52,14 @@ class IPTVViewModel(application: Application) : AndroidViewModel(application) {
 
     // Player instance
     val player: ExoPlayer by lazy {
-        ExoPlayer.Builder(application)
+        // Add a default HTTP data source with a friendly User-Agent to improve compatibility
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(mapOf("User-Agent" to "PulseIPTV/1.0"))
+        val dataSourceFactory = DefaultDataSource.Factory(getApplication(), httpFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+
+        ExoPlayer.Builder(getApplication())
+            .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
                 playWhenReady = true
@@ -115,13 +129,10 @@ class IPTVViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Observe playlists list to set the first active one, or import built-in demo if empty
+        // Observe playlists list to set the first active one (no automatic demo import)
         viewModelScope.launch {
             playlists.collect { list ->
-                if (list.isEmpty()) {
-                    // Automatically add the elegant built-in demo playlist so the user has immediate playability!
-                    importPredefinedDemo()
-                } else {
+                if (list.isNotEmpty()) {
                     val active = list.firstOrNull { it.isActive } ?: list.first()
                     if (activePlaylist.value?.id != active.id) {
                         activePlaylist.value = active
@@ -135,6 +146,8 @@ class IPTVViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     }
+                } else {
+                    activePlaylist.value = null
                 }
             }
         }
@@ -154,7 +167,38 @@ class IPTVViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(channel: Channel) {
         _selectedChannel.value = channel
         try {
-            val mediaItem = MediaItem.fromUri(channel.streamUrl)
+            val builder = MediaItem.Builder().setUri(channel.streamUrl)
+
+            // Apply per-channel HTTP headers if present
+            val headers = mutableMapOf<String, String>()
+            channel.userAgent?.let { headers["User-Agent"] = it }
+            channel.referer?.let { headers["Referer"] = it }
+            channel.origin?.let { headers["Origin"] = it }
+            channel.cookie?.let { headers["Cookie"] = it }
+            if (headers.isNotEmpty()) {
+                val reqMeta = RequestMetadata.Builder().setHttpRequestHeaders(headers).build()
+                builder.setRequestMetadata(reqMeta)
+            }
+
+            // Configure ClearKey DRM if requested
+            if (channel.drmType?.equals("clearkey", ignoreCase = true) == true && !channel.drmLicenseKey.isNullOrBlank()) {
+                try {
+                    val drmBuilder = MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID)
+                    val lic = channel.drmLicenseKey.trim()
+                    if (lic.startsWith("http")) {
+                        drmBuilder.setLicenseUri(Uri.parse(lic))
+                    } else if (lic.startsWith("{") || lic.startsWith("[")) {
+                        // Inline JSON license - encode as data URI
+                        val encoded = Base64.encodeToString(lic.toByteArray(), Base64.NO_WRAP)
+                        drmBuilder.setLicenseUri(Uri.parse("data:application/json;base64,$encoded"))
+                    }
+                    builder.setDrmConfiguration(drmBuilder.build())
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            val mediaItem = builder.build()
             player.setMediaItem(mediaItem)
             player.prepare()
             player.play()
@@ -209,6 +253,18 @@ class IPTVViewModel(application: Application) : AndroidViewModel(application) {
                 if (chans.isNotEmpty()) {
                     selectChannel(chans.first())
                 }
+            } else {
+                activePlaylist.value = null
+            }
+        }
+    }
+
+    fun deleteDemoPlaylists() {
+        viewModelScope.launch {
+            repository.deleteDemoPlaylists()
+            val currentList = repository.getAllPlaylistsList()
+            if (currentList.isNotEmpty()) {
+                activePlaylist.value = currentList.firstOrNull { it.isActive } ?: currentList.first()
             } else {
                 activePlaylist.value = null
             }

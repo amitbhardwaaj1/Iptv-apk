@@ -53,8 +53,9 @@ fun ChannelsScreen(
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isLandscape by viewModel.isManualLandscape.collectAsState()
-
-    var showPlaylistDialog by remember { mutableStateOf(false) }
+    val suggestedChannels = selectedChannel?.let { selected ->
+        filteredChannels.filter { it.id != selected.id }.take(4)
+    } ?: emptyList()
 
     // If landscape is active, make the video player full-viewport!
     if (isLandscape && selectedChannel != null) {
@@ -72,62 +73,76 @@ fun ChannelsScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // 1. Selector Bar at the Top of the Page
-        TopAppBar(
-            title = {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        .clickable { showPlaylistDialog = true }
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .testTag("playlist_selector_trigger"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlaylistPlay,
-                        contentDescription = "Playlist",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = activePlaylist?.name ?: "No Playlists Connected",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Icon(
-                        imageVector = Icons.Default.ArrowDropDown,
-                        contentDescription = "Switch playlist",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.background
-            ),
-            actions = {
-                // Quick info badge displaying total available channels
-                Badge(
-                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                    contentColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(end = 16.dp)
-                ) {
-                    Text(
-                        text = "${filteredChannels.size} Chs",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        // 1. Playlist selection by squares instead of a dropdown menu
+        Text(
+            text = "Your Playlists",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)
+        )
+
+        if (playlists.isNotEmpty()) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp)
+            ) {
+                items(playlists, key = { it.id }) { playlist ->
+                    PlaylistSquareCard(
+                        playlist = playlist,
+                        isSelected = playlist.id == activePlaylist?.id,
+                        onClick = {
+                            viewModel.changePlaylist(playlist.id)
+                            viewModel.selectedCategory.value = "All"
+                        }
                     )
                 }
             }
-        )
+        } else {
+            Text(
+                text = "No playlists available. Add one in Settings.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
 
-        // 2. Sticky Video Player at the Top of the Screens
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (activePlaylist != null) {
+            PlaylistHomeHeader(
+                playlist = activePlaylist,
+                channelCount = filteredChannels.size
+            )
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        if (selectedChannel != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16 / 9f)
+                    .background(Color.Black)
+            ) {
+                VideoPlayerView(
+                    viewModel = viewModel,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            if (suggestedChannels.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                SuggestedChannelsRow(
+                    suggested = suggestedChannels,
+                    onChannelClick = { viewModel.selectChannel(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // 2. Category selector + search input elements
         if (selectedChannel != null) {
             Box(
                 modifier = Modifier
@@ -355,6 +370,189 @@ fun ChannelsScreen(
             containerColor = SlateSurface,
             shape = RoundedCornerShape(16.dp)
         )
+    }
+}
+
+@Composable
+private fun PlaylistSquareCard(
+    playlist: Playlist,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .size(width = 120.dp, height = 140.dp)
+            .clickable(onClick = onClick)
+            .testTag("playlist_square_${playlist.id}"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+        ),
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, DarkContrastDivider)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Icon(
+                imageVector = Icons.Default.PlaylistPlay,
+                contentDescription = null,
+                tint = if (isSelected) Color.White else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(26.dp)
+            )
+            Column {
+                Text(
+                    text = playlist.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isSelected) Color.White else TextWhite,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (playlist.url == "built_in_demo") "Built-in" else playlist.url,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isSelected) Color.White.copy(alpha = 0.85f) else TextMuted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistHomeHeader(
+    playlist: Playlist?,
+    channelCount: Int,
+    modifier: Modifier = Modifier
+) {
+    if (playlist == null) return
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.14f))
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        Text(
+            text = playlist.name,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "${channelCount} channels • ${playlist.url}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun SuggestedChannelsRow(
+    suggested: List<Channel>,
+    onChannelClick: (Channel) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Suggested for you",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "More",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp)
+        ) {
+            items(suggested, key = { it.id }) { channel ->
+                SuggestedChannelCard(channel = channel, onClick = { onChannelClick(channel) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestedChannelCard(
+    channel: Channel,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .size(width = 160.dp, height = 120.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(70.dp)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!channel.logoUrl.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(channel.logoUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = channel.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        text = channel.name.take(1).uppercase(),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Column(modifier = Modifier.padding(horizontal = 10.dp)) {
+                Text(
+                    text = channel.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = channel.category,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 

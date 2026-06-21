@@ -86,6 +86,7 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.exoplayer.hls)
+  implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
   implementation(libs.androidx.media3.ui)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)

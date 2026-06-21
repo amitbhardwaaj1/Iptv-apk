@@ -7,6 +7,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.BufferedReader
 import java.io.StringReader
+import org.json.JSONArray
+import org.json.JSONObject
 
 class IPTVRepository(private val database: IPTVDatabase) {
     private val playlistDao = database.playlistDao()
@@ -51,13 +53,33 @@ class IPTVRepository(private val database: IPTVDatabase) {
         channelDao.deleteChannelsForPlaylist(playlistId)
     }
 
+    suspend fun deleteDemoPlaylists() {
+        val all = playlistDao.getAllPlaylistsList()
+        val demos = all.filter { it.url == "built_in_demo" }
+        demos.forEach { demo ->
+            channelDao.deleteChannelsForPlaylist(demo.id)
+            playlistDao.deletePlaylist(demo)
+        }
+        // If the demo was active, ensure there's still a sensible active playlist
+        val remaining = playlistDao.getAllPlaylistsList()
+        if (remaining.isNotEmpty()) {
+            playlistDao.setActivePlaylist(remaining.first().id)
+        }
+    }
+
     suspend fun parseAndSavePlaylist(name: String, m3uUrl: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 val content: String = if (m3uUrl == "built_in_demo") {
                     "" // Don't download demo
                 } else {
-                    val request = Request.Builder().url(m3uUrl).build()
+                    val builder = Request.Builder().url(m3uUrl)
+                    // Add a friendly User-Agent and special Referer for certain worker-hosted endpoints
+                    builder.header("User-Agent", "PulseIPTV/1.0")
+                    if (m3uUrl.contains("streamstar18.workers.dev")) {
+                        builder.header("Referer", "https://noisy-truth-6766.streamstar18.workers.dev")
+                    }
+                    val request = builder.build()
                     client.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) return@withContext false
                         response.body?.string() ?: return@withContext false
@@ -74,7 +96,12 @@ class IPTVRepository(private val database: IPTVDatabase) {
                 if (m3uUrl == "built_in_demo") {
                     channelsList.addAll(getDemoChannels(playlistId))
                 } else {
-                    channelsList.addAll(parseM3UContent(content, playlistId))
+                    val trimmed = content.trim()
+                    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                        channelsList.addAll(parseJsonContent(content, playlistId))
+                    } else {
+                        channelsList.addAll(parseM3UContent(content, playlistId))
+                    }
                 }
 
                 if (channelsList.isNotEmpty()) {
@@ -92,6 +119,90 @@ class IPTVRepository(private val database: IPTVDatabase) {
         }
     }
 
+    private fun parseJsonContent(content: String, playlistId: Int): List<Channel> {
+        val channels = mutableListOf<Channel>()
+        try {
+            val trimmed = content.trim()
+            val array = if (trimmed.startsWith("{")) {
+                // Might be an object with a "channels" array
+                val obj = JSONObject(trimmed)
+                when {
+                    obj.has("channels") -> obj.getJSONArray("channels")
+                    obj.has("items") -> obj.getJSONArray("items")
+                    else -> JSONArray().also { // wrap single object into array
+                        val a = JSONArray()
+                        a.put(obj)
+                    }
+                }
+            } else {
+                JSONArray(trimmed)
+            }
+
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                val name = when {
+                    item.has("name") -> item.getString("name")
+                    item.has("title") -> item.getString("title")
+                    item.has("channel") -> item.getString("channel")
+                    else -> "Channel ${i + 1}"
+                }
+
+                val stream = when {
+                    item.has("streamUrl") -> item.getString("streamUrl")
+                    item.has("url") -> item.getString("url")
+                    item.has("stream") -> item.getString("stream")
+                    else -> null
+                } ?: continue
+
+                val logo = when {
+                    item.has("logo") -> item.optString("logo", null)
+                    item.has("tvg-logo") -> item.optString("tvg-logo", null)
+                    else -> null
+                }
+
+                val category = when {
+                    item.has("category") -> item.optString("category", "Uncategorized")
+                    item.has("group") -> item.optString("group", "Uncategorized")
+                    else -> "Uncategorized"
+                }
+
+                // Optional header/drm fields in JSON
+                val userAgent = when {
+                    item.has("userAgent") -> item.optString("userAgent", null)
+                    item.has("User-Agent") -> item.optString("User-Agent", null)
+                    else -> null
+                }
+                val referer = item.optString("referer", item.optString("Referer", null))
+                val origin = item.optString("origin", null)
+                val cookie = item.optString("cookie", null)
+                val drmType = item.optString("drmType", item.optString("license_type", null))
+                val drmLicenseKey = item.optString("drmLicenseKey", item.optString("license_key", null))
+                val manifestType = item.optString("manifestType", item.optString("manifest_type", null))
+
+                channels.add(
+                    Channel(
+                        playlistId = playlistId,
+                        name = name,
+                        streamUrl = stream,
+                        logoUrl = logo,
+                        category = category,
+                        position = i,
+                        userAgent = userAgent,
+                        referer = referer,
+                        origin = origin,
+                        cookie = cookie,
+                        drmType = drmType,
+                        drmLicenseKey = drmLicenseKey,
+                        manifestType = manifestType
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return channels
+    }
+
     private fun parseM3UContent(content: String, playlistId: Int): List<Channel> {
         val channels = mutableListOf<Channel>()
         val reader = BufferedReader(StringReader(content))
@@ -99,31 +210,103 @@ class IPTVRepository(private val database: IPTVDatabase) {
 
         reader.forEachLine { line ->
             val trimmed = line.trim()
-            if (trimmed.startsWith("#EXTINF:")) {
-                val info = trimmed.substring(8)
-                val name = info.substringAfterLast(",").trim()
-                val groupTitle = parseAttribute(info, "group-title") ?: "Uncategorized"
-                val logoUrl = parseAttribute(info, "tvg-logo") ?: parseAttribute(info, "logo")
-                currentItem = ChannelTemp(name, logoUrl, groupTitle)
-            } else if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                currentItem?.let {
-                    channels.add(
-                        Channel(
-                            playlistId = playlistId,
-                            name = it.name.ifEmpty { "Channel ${channels.size + 1}" },
-                            streamUrl = trimmed,
-                            logoUrl = it.logo,
-                            category = it.group.ifEmpty { "Uncategorized" }
-                        )
-                    )
+            when {
+                trimmed.startsWith("#EXTINF:") -> {
+                    val info = trimmed.substring(8)
+                    val name = info.substringAfterLast(",").trim()
+                    val groupTitle = parseAttribute(info, "group-title") ?: "Uncategorized"
+                    val logoUrl = parseAttribute(info, "tvg-logo") ?: parseAttribute(info, "logo")
+                    currentItem = ChannelTemp(name, logoUrl, groupTitle)
                 }
-                currentItem = null
+                trimmed.startsWith("#KODIPROP:") -> {
+                    // Example: #KODIPROP:inputstream.adaptive.manifest_type=mpd
+                    val kv = trimmed.substringAfter(":").trim()
+                    val (k, v) = kv.substringBefore("=").trim() to kv.substringAfter("=").trim()
+                    currentItem = currentItem ?: ChannelTemp("", null, "Uncategorized")
+                    when {
+                        k.contains("manifest_type") -> currentItem.manifestType = v
+                        k.contains("license_type") -> currentItem.drmType = v
+                        k.contains("license_key") -> currentItem.drmLicenseKey = v
+                        else -> {
+                            // ignore other kodi props for now
+                        }
+                    }
+                }
+                trimmed.startsWith("#EXTVLCOPT:") -> {
+                    val kv = trimmed.substringAfter(":").trim()
+                    currentItem = currentItem ?: ChannelTemp("", null, "Uncategorized")
+                    parseExtVlcOpt(kv, currentItem)
+                }
+                trimmed.isNotEmpty() && !trimmed.startsWith("#") -> {
+                    currentItem?.let {
+                        // Determine manifest type from URL if not set
+                        val manifest = it.manifestType ?: when {
+                            trimmed.contains(".m3u8") -> "hls"
+                            trimmed.contains(".mpd") -> "mpd"
+                            trimmed.contains(".mp4") -> "progressive"
+                            else -> null
+                        }
+
+                        channels.add(
+                            Channel(
+                                playlistId = playlistId,
+                                name = it.name.ifEmpty { "Channel ${channels.size + 1}" },
+                                streamUrl = trimmed,
+                                logoUrl = it.logo,
+                                category = it.group.ifEmpty { "Uncategorized" },
+                                position = channels.size,
+                                userAgent = it.userAgent,
+                                referer = it.referer,
+                                origin = it.origin,
+                                cookie = it.cookie,
+                                drmType = it.drmType,
+                                drmLicenseKey = it.drmLicenseKey,
+                                manifestType = manifest
+                            )
+                        )
+                    }
+                    currentItem = null
+                }
+                else -> {
+                    // ignore other lines
+                }
             }
         }
         return channels
     }
 
-    private data class ChannelTemp(val name: String, val logo: String?, val group: String)
+    private data class ChannelTemp(
+        var name: String,
+        var logo: String?,
+        var group: String,
+        var userAgent: String? = null,
+        var referer: String? = null,
+        var origin: String? = null,
+        var cookie: String? = null,
+        var drmType: String? = null,
+        var drmLicenseKey: String? = null,
+        var manifestType: String? = null
+    )
+
+    private fun parseExtVlcOpt(kv: String, item: ChannelTemp) {
+        // EXTVLCOPT may contain tokens like "http-user-agent=..." or "User-Agent=..." or "http-referrer=..."
+        val parts = kv.split(Regex("[ \\;]+"))
+        for (p in parts) {
+            val token = p.trim()
+            if (!token.contains("=")) continue
+            val key = token.substringBefore("=").trim()
+            val value = token.substringAfter("=").trim().trim('"')
+            when (key.lowercase()) {
+                "http-user-agent", "user-agent", "http-useragent" -> item.userAgent = value
+                "http-referrer", "referrer", "referer" -> item.referer = value
+                "origin" -> item.origin = value
+                "cookie", "http-cookie" -> item.cookie = value
+                else -> {
+                    // unknown option - ignore
+                }
+            }
+        }
+    }
 
     private fun parseAttribute(info: String, name: String): String? {
         val key = "$name=\""

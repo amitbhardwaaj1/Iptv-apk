@@ -31,7 +31,17 @@ data class Channel(
     val streamUrl: String,
     val logoUrl: String? = null,
     val category: String = "Uncategorized",
-    val isFavorite: Boolean = false
+    val position: Int = 0,
+    val isFavorite: Boolean = false,
+    // Optional HTTP header overrides extracted from playlists
+    val userAgent: String? = null,
+    val referer: String? = null,
+    val origin: String? = null,
+    val cookie: String? = null,
+    // DRM / manifest info
+    val drmType: String? = null,
+    val drmLicenseKey: String? = null,
+    val manifestType: String? = null
 )
 
 @Dao
@@ -69,10 +79,10 @@ interface PlaylistDao {
 
 @Dao
 interface ChannelDao {
-    @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY name ASC")
+    @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY position ASC")
     fun getChannelsForPlaylist(playlistId: Int): Flow<List<Channel>>
 
-    @Query("SELECT * FROM channels WHERE playlistId = :playlistId")
+    @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY position ASC")
     suspend fun getChannelsForPlaylistList(playlistId: Int): List<Channel>
 
     @Query("SELECT * FROM channels WHERE isFavorite = 1")
@@ -88,7 +98,7 @@ interface ChannelDao {
     suspend fun updateFavoriteStatus(channelId: Int, isFav: Boolean)
 }
 
-@Database(entities = [Playlist::class, Channel::class], version = 1, exportSchema = false)
+@Database(entities = [Playlist::class, Channel::class], version = 2, exportSchema = false)
 abstract class IPTVDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun channelDao(): ChannelDao
