@@ -1,0 +1,6 @@
+{
+  "name": "PulseIPTV",
+  "description": "A high-performance, phone-first, gesture-controlled IPTV client featuring beautiful dark AMOLED styling and easy playlist categorization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
